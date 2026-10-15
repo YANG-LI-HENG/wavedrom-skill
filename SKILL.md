@@ -21,7 +21,7 @@ The user writes RTL with Claude Code and finds prose descriptions of timing hard
    - Always set `head:{tick:0}` so the diagram has cycle numbers to refer to.
    - For a large diagram, write the JSON to a file in the scratchpad and pass the path instead of `-e`.
    - Several diagrams in one reply: run the script once per diagram (each opens its own tab). Use `--no-open` for any the user doesn't need to see right away.
-3. **Check the PNG before replying**: Read the image file and confirm it shows what you meant (labels in the right cycles, edges where intended). Fix the JSON and re-run if not. The WaveDrom tick numbers mark clock edges: "cycle N" is the column between ticks N and N+1.
+3. **Check the PNG before replying**: Read the image file and confirm it shows what you meant (transitions and labels in the right cycles). Fix the JSON and re-run if not. The WaveDrom tick numbers mark clock edges: "cycle N" is the column between ticks N and N+1.
 4. **Do not paste a text-art waveform into the reply** (the user found it hard to read). Give the image path (and HTML path), then explain by cycle number ("in cycle 3 valid and ready are both high, so …").
 5. If the script reports `Image: skipped`, the HTML still works. Mention that images need `~/.claude/skills/wavedrom/scripts/setup.sh`.
 
@@ -44,7 +44,7 @@ The diagram must match what the RTL actually does — a wrong waveform is worse 
 - Order signals causally: clock, reset, control inputs, state, outputs, data.
 - Use `["group name", sig, sig]` to group signals (e.g. `"master"`, `"slave"`), and `{}` for a blank spacer row.
 - Use bus colours to carry meaning: `3`–`9` fill the value box (3 yellow, 4 orange, 5 blue, 6 cyan, 7 green, 8 pink, 9 red); `=` and `2` are white. E.g. one colour per FSM state, or the same colour for a value as it moves through pipeline stages.
-- Use `node` + `edge` arrows to show causality ("valid&&ready here → q updates here"), with a short label.
+- **Do not use `node` or `edge`** (no arrows, node letters or arrow labels on the diagram); the user wants a clean waveform. Put causality ("valid&&ready in cycle 2 → q updates in cycle 3") in the reply text and the `-d` caption instead.
 - Keep bus labels short (`D0`, `IDLE`, `0x3`); a long label in a one-cycle box overflows. Widen with `config:{hscale:2}` if needed.
 
 ## WaveJSON cheat sheet
@@ -54,12 +54,11 @@ The diagram must match what the RTL actually does — a wrong waveform is worse 
   { name: "clk",   wave: "p......." },          // clock: p/n, P/N mark the active edge
   { name: "valid", wave: "0.1..0.." },          // 0 1 = levels, . = hold previous
   { name: "data",  wave: "x.=.=x..", data: ["D0", "D1"] }, // = or 2-9 = bus value, labels from data
-  { name: "en",    wave: "01.|0...", node: ".a..b" },       // | = gap; node letters under cycles
+  { name: "en",    wave: "01.|0..." },          // | = gap
   {},                                            // spacer
   ["fsm", { name: "state", wave: "2.3.4.2.", data: "IDLE RUN DONE IDLE" }],
   { name: "slow",  wave: "p...", period: 2 },    // each char spans 2 cycles
 ],
-  edge: ["a~>b enable window"],                  // arrow from node a to node b, with a label (-> straight, ~> curved)
   head: { text: "title", tick: 0 },              // title; tick = first cycle number
   config: { hscale: 1 }                          // widen every cycle
 }
@@ -76,10 +75,10 @@ python3 ~/.claude/skills/wavedrom/scripts/wave2img.py -n q_capture \
   -d "cycle 2-3: valid && ready -> q updates at the next edge (cycle 3, cycle 4)" -e "{signal:[
  {name:'clk',   wave:'p......'},
  {name:'valid', wave:'01..0..'},
- {name:'ready', wave:'0.1.0..', node:'..a'},
+ {name:'ready', wave:'0.1.0..'},
  {name:'data',  wave:'x34.x..', data:'A B'},
- {name:'q',     wave:'x..44..', data:'B B', node:'...b'}],
- edge:['a~>b sampled at next edge'], head:{text:'q <= data when valid && ready', tick:0}}"
+ {name:'q',     wave:'x..44..', data:'B B'}],
+ head:{text:'q <= data when valid && ready', tick:0}}"
 ```
 
 Reply with the file path, then explain: valid and ready are both high in cycles 2 and 3, so the edge at the start of cycle 3 captures B (the value present in cycle 2) and q shows B from cycle 3. The cycle-3 handshake captures B again at the start of cycle 4. A was never captured, because ready was low in cycle 1.
