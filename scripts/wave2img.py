@@ -15,6 +15,7 @@ Options:
   -d, --desc TEXT     a caption shown under the diagram on the HTML page
   -f, --format FMT    image format: png (white background), svg, both, none
   --scale N           PNG scale factor (default 2)
+  --overwrite         replace existing files with the same name (default: add _2, _3, ...)
   --no-open           don't open the browser
 
 Defaults come from ~/.config/wavedrom-skill/config.json, e.g.
@@ -186,6 +187,7 @@ def main():
     ap.add_argument("-d", "--desc", default="")
     ap.add_argument("-f", "--format", choices=FORMATS)
     ap.add_argument("--scale", type=float)
+    ap.add_argument("--overwrite", action="store_true")
     ap.add_argument("--no-open", action="store_true")
     a = ap.parse_args()
     cfg = load_config()
@@ -213,6 +215,12 @@ def main():
     name = slug(a.name or "") or slug(str(head.get("text", ""))) or now.strftime("wave_%Y%m%d_%H%M%S")
     os.makedirs(out_dir, exist_ok=True)
     base = os.path.join(os.path.abspath(out_dir), name)
+    if not a.overwrite:  # keep earlier diagrams: pick the first free name_2, name_3, ...
+        n = 1
+        while any(os.path.exists(base + ext) for ext in (".json", ".html", ".png", ".svg")):
+            n += 1
+            base = os.path.join(os.path.abspath(out_dir), "%s_%d" % (name, n))
+        name = os.path.basename(base)
 
     strict = json.dumps(doc, ensure_ascii=False, indent=1)
     with open(base + ".json", "w", encoding="utf-8") as f:

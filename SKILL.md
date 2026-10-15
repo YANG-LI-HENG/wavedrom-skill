@@ -14,9 +14,14 @@ The user writes RTL with Claude Code and finds prose descriptions of timing hard
    ```bash
    python3 ~/.claude/skills/wavedrom/scripts/wave2img.py -n <short_name> -d "<caption>" -e "{signal:[ ... ], head:{text:'<title>', tick:0}}"
    ```
-   - This writes `~/waveforms/<short_name>.html`, `.json` and an image, and opens the HTML in the user's browser. The HTML uses the official WaveDrom renderer.
+   - This writes `~/waveforms/<short_name>.html`, `.json` and an image, and opens the HTML in the user's browser. The HTML uses the official WaveDrom renderer. Keep the files in `~/waveforms` (the default; the script creates it if missing): don't pass `-o` unless the user asks for another place.
    - The image format comes from `~/.config/wavedrom-skill/config.json` (`"format": "png"` by default: white background; also `svg`, `both`, `none`). Pass `-f svg` etc. only when the user asks for a different format for this diagram; if they want to change it permanently, edit the config file.
-   - `-n`: a short snake_case name describing the diagram (`axi_handshake`, `fifo_full_fix`). Reusing a name overwrites the old files, so use a new one per diagram unless you're revising the same one.
+   - `-n`: always give a meaningful file name, so the user can find the diagram later in `~/waveforms`:
+     - `<module or topic>_<what it shows>`, lowercase snake_case, about 2–5 words: `uart_tx_start_bit`, `sync_fifo_full_write_ignored`, `axi_stream_backpressure`, `spi_master_mode0_read`.
+     - Use the real module/signal names from the user's code when there is one.
+     - For variants add a suffix: `_before` / `_after` (a fix), `_reg` / `_comb` (alternatives).
+     - Never generic names like `test`, `wave`, `diagram`, `example`, `tmp`.
+     - An existing name is not overwritten: the script saves as `<name>_2`, `<name>_3`, ... and prints the path it used, so report that path. When revising the same diagram the user is looking at, pass `--overwrite` to keep its name.
    - `-d`: a short per-cycle summary shown under the diagram on the page (newlines allowed).
    - Always set `head:{tick:0}` so the diagram has cycle numbers to refer to.
    - For a large diagram, write the JSON to a file in the scratchpad and pass the path instead of `-e`.
