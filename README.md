@@ -70,7 +70,11 @@ WaveJSON 語法請參考 [WaveDrom tutorial](https://wavedrom.com/tutorial.html)
 
 - **Claude Code Desktop**：安裝方式和上面相同（clone 到 `~/.claude/skills/wavedrom`）。Claude 會依環境變數 `CLAUDE_CODE_ENTRYPOINT` 自動判斷目前在 Desktop，用 Artifact 工具顯示波形。
 - **claude.ai**：claude.ai 讀不到本機的檔案，所以要上傳一次 skill：
-  1. 把這個資料夾打包成 zip：`cd ~/.claude/skills && zip -r wavedrom.zip wavedrom -x 'wavedrom/.git/*'`
+  1. 把這個資料夾打包成 zip（不需要另外安裝 `zip`）：
+     ```bash
+     cd ~/.claude/skills && python3 -c "import shutil; shutil.make_archive('wavedrom', 'zip', '.', 'wavedrom')"
+     ```
+     產生的 `~/.claude/skills/wavedrom.zip` 裡會包含 `.git`，不影響使用。
   2. 到 claude.ai 的 **Settings → Capabilities → Skills** 上傳 `wavedrom.zip`（需要先開啟 code execution）
   3. 之後在 claude.ai 問時序問題，Claude 就會直接產生波形 artifact
 
