@@ -8,15 +8,21 @@ Usage:
 
 Options:
   --ascii        plain ASCII instead of Unicode box drawing
-  --width N      characters per cycle (default 4, multiplied by config.hscale)
+  --width N      minimum characters per cycle (default 6, multiplied by config.hscale);
+                 cycles are widened automatically so every bus label fits
   --no-url       don't print the WaveDrom editor link
   --url-only     only print the editor link
 
 Accepts relaxed WaveJSON (unquoted keys, single quotes, trailing commas),
 the same syntax the WaveDrom editor accepts.
+
+Each signal is drawn on three rows (high / middle / low), like WaveDrom:
+levels as lines, bus values as hexagons with crossed transitions,
+x as a hatched box, z on the middle row.
 """
 import argparse
 import json
+import math
 import re
 import sys
 import urllib.parse
@@ -25,6 +31,7 @@ EDITOR = "https://wavedrom.com/editor.html?"
 BUS = set("=23456789")
 CLOCK = set("pnPN")
 LEVEL_MAP = {"h": "1", "H": "1", "u": "1", "l": "0", "L": "0", "d": "0"}
+MAX_AUTO_WIDTH = 16  # don't widen cycles beyond this for long labels; truncate instead
 
 
 # ---------------------------------------------------------------- parsing
@@ -42,34 +49,25 @@ def relaxed_json(text):
                     buf.append(text[j:j + 2])
                     j += 2
                     continue
-                if text[j] == '"':
-                    buf.append('\\"')
-                else:
-                    buf.append(text[j])
+                buf.append('\\"' if text[j] == '"' else text[j])
                 j += 1
             out.append('"' + "".join(buf).replace("\\'", "'") + '"')
             i = j + 1
-        elif c == "/" and text[i:i + 2] == "//":
+        elif text.startswith("//", i):
             while i < n and text[i] != "\n":
                 i += 1
-        elif c == "/" and text[i:i + 2] == "/*":
+        elif text.startswith("/*", i):
             end = text.find("*/", i + 2)
             i = n if end < 0 else end + 2
         elif c.isalpha() or c in "_$":
-            m = re.match(r"[A-Za-z_$][\w$]*", text[i:])
-            word = m.group(0)
-            rest = text[i + len(word):].lstrip()
-            if rest.startswith(":") or word not in ("true", "false", "null"):
-                out.append('"%s"' % word if rest.startswith(":") else word)
-            else:
-                out.append(word)
+            word = re.match(r"[A-Za-z_$][\w$]*", text[i:]).group(0)
+            is_key = text[i + len(word):].lstrip().startswith(":")
+            out.append('"%s"' % word if is_key else word)
             i += len(word)
         else:
             out.append(c)
             i += 1
-    s = "".join(out)
-    s = re.sub(r",(\s*[\]}])", r"\1", s)
-    return json.loads(s)
+    return json.loads(re.sub(r",(\s*[\]}])", r"\1", "".join(out)))
 
 
 def load(text):
@@ -79,31 +77,11 @@ def load(text):
         return relaxed_json(text)
 
 
-# ---------------------------------------------------------------- glyphs
+# ---------------------------------------------------------------- waves
 
-class Glyphs:
-    def __init__(self, ascii_mode):
-        self.ascii = ascii_mode
-        self.cross = "X" if ascii_mode else "╳"
-        self.gap = "~" if ascii_mode else "≈"
-        self.group = "> " if ascii_mode else "▸ "
+HI, LO, MID, BOX, BLANK = "hi", "lo", "mid", "box", "blank"
+KIND = {"1": HI, "0": LO, "z": MID, " ": BLANK}
 
-    def two_row(self, top, bot):
-        if not self.ascii:
-            return top, bot
-        t = {"─": "_", "┌": " ", "┐": " ", "░": "x", "┄": " "}
-        b = {"─": "_", "┘": "|", "└": "|", "░": "x", "┄": "-", "↑": "^", "↓": "v"}
-        return ("".join(t.get(c, c) for c in top),
-                "".join(b.get(c, c) for c in bot))
-
-    def one_row(self, row):
-        if not self.ascii:
-            return row
-        m = {"‾": "^", "░": "x", "─": "-", "╳": "X", "≈": "~"}
-        return "".join(m.get(c, c) for c in row)
-
-
-# ---------------------------------------------------------------- segments
 
 def segments(wave):
     """Split a wave string into [state, ncycles, gap_cycle_offsets]."""
@@ -120,99 +98,138 @@ def segments(wave):
     return segs
 
 
-def clock_cell(state, L, prev_level):
-    h = max(1, L // 2)
-    lo = L - h
-    if state in "pP":
-        if prev_level == "1":
-            top, bot = "─" * h, " " * h
-        else:
-            top, bot = "┌" + "─" * (h - 1), ("↑" if state == "P" else "┘") + " " * (h - 1)
-        top += "┐" + " " * (lo - 1)
-        bot += "└" + "─" * (lo - 1)
-        return top, bot, "0"
-    if prev_level == "0":
-        top, bot = " " * h, "─" * h
-    else:
-        top, bot = "┐" + " " * (h - 1), ("↓" if state == "N" else "└") + "─" * (h - 1)
-    top += "┌" + "─" * (lo - 1)
-    bot += "┘" + " " * (lo - 1)
-    return top, bot, "1"
+def primitives(segs, L, labels):
+    """Turn segments into drawing primitives: (kind, start, end, label, edge_mark).
 
-
-FILL = {"1": ("─", " "), "0": (" ", "─"), "x": ("░", "░"), "z": (" ", "┄"), " ": (" ", " ")}
-
-
-def render_bits(segs, L):
-    top, bot = [], []
-    level = None
+    Clocks expand into alternating hi/lo pieces; bus values and x become boxes.
+    """
+    labels = list(labels)
+    prims, pos = [], 0
     for state, n, _ in segs:
         if state in CLOCK:
-            for _ in range(n):
-                t, b, level = clock_cell(state, L, level)
-                top.append(t)
-                bot.append(b)
-            continue
-        ft, fb = FILL.get(state, FILL["x"])
-        t, b = ft * (n * L), fb * (n * L)
-        if level == "0" and state == "1":
-            t, b = "┌" + t[1:], "┘" + b[1:]
-        elif level == "1" and state == "0":
-            t, b = "┐" + t[1:], "└" + b[1:]
-        top.append(t)
-        bot.append(b)
-        level = state if state in "01" else None
-    return "".join(top), "".join(bot)
-
-
-def render_bus(segs, L, labels, g):
-    row, labels = [], list(labels)
-    for k, (state, n, _) in enumerate(segs):
-        width = n * L
-        if state in BUS:
-            label = str(labels.pop(0)) if labels else ""
-            body = (" " + label)[:width - (1 if k else 0)]
-            cell = body.ljust(width - (1 if k else 0))
-        elif state in CLOCK:
-            cell = ("┌┐" * width)[:width - (1 if k else 0)]
+            h = max(1, L // 2)
+            first, second = (HI, LO) if state in "pP" else (LO, HI)
+            mark = {"P": "↑", "N": "↓"}.get(state)
+            for k in range(n):
+                s = pos + k * L
+                prims.append([first, s, s + h, None, mark])
+                prims.append([second, s + h, s + L, None, None])
+        elif state in BUS:
+            prims.append([BOX, pos, pos + n * L, str(labels.pop(0)) if labels else "", None])
+        elif state in KIND:
+            prims.append([KIND[state], pos, pos + n * L, None, None])
+        else:  # x and anything unknown
+            prims.append([BOX, pos, pos + n * L, None, None])
+        pos += n * L
+    # merge adjacent identical levels (e.g. '1' after a clock that ended high)
+    merged = []
+    for p in prims:
+        if merged and p[0] == merged[-1][0] and p[0] in (HI, LO, MID, BLANK):
+            merged[-1][2] = p[2]
         else:
-            ch = {"1": "‾", "0": "_", "z": "─", "x": "░", " ": " "}.get(state, "░")
-            cell = ch * (width - (1 if k else 0))
-        row.append((g.cross if k else "") + cell)
-    if segs and segs[-1][0] in BUS:
-        row.append(g.cross)  # close the last value so it doesn't look cut off
-    return "".join(row)
+            merged.append(p)
+    return merged
 
 
-def overlay_gaps(rows, segs, L, g):
+def draw(prims, total, hatch):
+    rows = [[" "] * total for _ in range(3)]
+
+    def put(r, c, ch):
+        if 0 <= c < total:
+            rows[r][c] = ch
+
+    # bodies
+    for kind, s, e, label, _ in prims:
+        for c in range(s, e):
+            if kind == HI:
+                put(0, c, "─")
+            elif kind == LO:
+                put(2, c, "─")
+            elif kind == MID:
+                put(1, c, "─")
+            elif kind == BOX:
+                put(0, c, "─")
+                put(2, c, "─")
+        if kind == BOX:
+            inner_s, inner_e = s + (2 if s else 1), e - 1
+            if label is None:
+                for c in range(inner_s, inner_e):
+                    put(1, c, hatch)
+            elif label:
+                room = max(0, inner_e - inner_s)
+                text = label if len(label) <= room else label[:max(0, room - 1)] + "…"
+                off = inner_s + (room - len(text)) // 2
+                for k, ch in enumerate(text):
+                    put(1, off + k, ch)
+
+    # transitions
+    for prev, cur in zip(prims, prims[1:]):
+        a, k, b = prev[0], cur[0], cur[1]
+        if BLANK in (a, k):
+            continue
+        if a == BOX and k == BOX:
+            put(0, b - 1, "╲"); put(0, b, " "); put(0, b + 1, "╱")
+            put(1, b, "╳")
+            put(2, b - 1, "╱"); put(2, b, " "); put(2, b + 1, "╲")
+        elif a == BOX:
+            if k in (LO, MID):
+                put(0, b - 1, "╲"); put(0, b, " ")
+            if k in (HI, MID):
+                put(2, b - 1, "╱"); put(2, b, " ")
+            if k == LO:
+                put(1, b, "╲")
+            elif k == HI:
+                put(1, b, "╱")
+        elif k == BOX:
+            if a == LO:
+                put(0, b, " "); put(1, b, "╱"); put(0, b + 1, "╱")
+            elif a == HI:
+                put(2, b, " "); put(1, b, "╲"); put(2, b + 1, "╲")
+            else:  # MID
+                put(0, b, "╱"); put(2, b, "╲")
+        else:
+            edge = {
+                (LO, HI): ("┌", "│", "┘"), (HI, LO): ("┐", "│", "└"),
+                (MID, HI): ("┌", "┘", None), (MID, LO): (None, "┐", "└"),
+                (HI, MID): ("┐", "└", None), (LO, MID): (None, "┌", "┘"),
+            }[(a, k)]
+            for r, ch in enumerate(edge):
+                if ch:
+                    put(r, b, ch)
+            if cur[4] and a in (HI, LO) and k in (HI, LO):
+                put(1, b, cur[4])  # P / N: arrow on the active edge
+    return rows
+
+
+def overlay_gaps(rows, segs, L, gap):
     pos = 0
-    rows = [list(r) for r in rows]
     for _, n, gaps in segs:
         for c in gaps:
             col = pos + c * L + L // 2
-            hit = False
             for r in rows:
-                if col < len(r) and r[col] != " ":
-                    r[col] = g.gap
-                    hit = True
-            if not hit and rows and col < len(rows[0]):
-                rows[0][col] = g.gap
+                if col < len(r):
+                    r[col] = gap
         pos += n * L
-    return ["".join(r) for r in rows]
 
 
-def node_row(nodes, L):
-    row = [" "] * (len(nodes) * L)
+def node_row(nodes, L, total):
+    row = [" "] * total
     for i, ch in enumerate(nodes):
-        if ch != ".":
-            row[i * L + L // 2] = ch
+        col = i * L + L // 2
+        if ch != "." and col < total:
+            row[col] = ch
     return "".join(row)
+
+
+ASCII = str.maketrans({"─": "-", "│": "|", "┌": "+", "┐": "+", "└": "+", "┘": "+",
+                       "╱": "/", "╲": "\\", "╳": "X", "…": "~", "↑": "^", "↓": "v",
+                       "≈": "~"})
 
 
 # ---------------------------------------------------------------- layout
 
 def flatten(items, depth=0):
-    """Yield (depth, item) where item is a signal dict, group name str, or None (spacer)."""
+    """Yield (depth, item): item is a signal dict, a group name str, or None (spacer)."""
     for it in items:
         if isinstance(it, list):
             if it and isinstance(it[0], str):
@@ -226,62 +243,86 @@ def flatten(items, depth=0):
             yield depth, None
 
 
-def render(doc, cycle_width=4, ascii_mode=False):
-    g = Glyphs(ascii_mode)
-    hscale = int((doc.get("config") or {}).get("hscale", 1) or 1)
-    W = max(2, cycle_width * hscale)
-    entries = list(flatten(doc.get("signal", [])))
+def signal_info(it):
+    period = max(1, int(round(float(it.get("period", 1)))))
+    wave = str(it.get("wave", ""))
+    data = it.get("data", [])
+    if isinstance(data, str):
+        data = data.split()
+    return period, wave, segments(wave), [str(d) for d in data]
 
-    lines = []  # (label, [rows])
+
+def cycle_width(entries, base):
+    """Smallest per-cycle width >= base such that every bus label fits its box."""
+    W = base
+    for _, it in entries:
+        if not isinstance(it, dict):
+            continue
+        period, _, segs, data = signal_info(it)
+        labels = iter(data)
+        for state, n, _ in segs:
+            if state in BUS:
+                label = next(labels, "")
+                need = len(label) + 4  # crossing on each side + one space margin
+                W = max(W, math.ceil(need / (n * period)))
+    return W
+
+
+def render(doc, base_width=6, ascii_mode=False):
+    hscale = int((doc.get("config") or {}).get("hscale", 1) or 1)
+    entries = list(flatten(doc.get("signal", [])))
+    W = min(max(base_width * hscale, cycle_width(entries, base_width * hscale)),
+            max(MAX_AUTO_WIDTH, base_width * hscale))
+    W = max(W, 4)
+    hatch = "/" if ascii_mode else "╱"
+    gap = "~" if ascii_mode else "≈"
+    group_mark = "> " if ascii_mode else "▸ "
+
+    blocks = []  # (label, rows, label_row)
     ncycles = 0
     for depth, it in entries:
         indent = "  " * depth
         if it is None:
-            lines.append(("", [""]))
+            blocks.append(("", [""], 0))
             continue
         if isinstance(it, str):
-            lines.append((indent + g.group + it, []))
+            blocks.append((indent + group_mark + it, [""], 0))
             continue
-        period = max(1, int(round(float(it.get("period", 1)))))
+        period, wave, segs, data = signal_info(it)
         L = W * period
-        wave = str(it.get("wave", ""))
-        segs = segments(wave)
-        data = it.get("data", [])
-        if isinstance(data, str):
-            data = data.split()
-        if any(c in BUS for c in wave):
-            rows = [g.one_row(overlay_gaps([render_bus(segs, L, data, g)], segs, L, g)[0])]
-        else:
-            rows = list(g.two_row(*overlay_gaps(list(render_bits(segs, L)), segs, L, g)))
+        cycles = sum(n for _, n, _ in segs)
+        total = cycles * L
+        ncycles = max(ncycles, cycles * period)
+        rows = draw(primitives(segs, L, data), total, hatch)
+        overlay_gaps(rows, segs, L, gap)
+        rows = ["".join(r) for r in rows]
         if it.get("node"):
-            rows.append(node_row(str(it["node"]), L))
+            rows.append(node_row(str(it["node"]), L, total))
         shift = int(round(float(it.get("phase", 0)) * W))
         if shift > 0:
             rows = [r[shift:] for r in rows]
         elif shift < 0:
             rows = [" " * -shift + r for r in rows]
-        lines.append((indent + str(it.get("name", "")), rows))
-        ncycles = max(ncycles, sum(n for _, n, _ in segs) * period)
+        blocks.append((indent + str(it.get("name", "")), rows, 1))
 
-    name_w = max([len(l) for l, _ in lines] + [0]) + 2
+    name_w = max([len(l) for l, _, _ in blocks] + [0]) + 2
     head = doc.get("head") or {}
-    tick0 = int(head.get("tick", 0)) if str(head.get("tick", "")).lstrip("-").isdigit() else 0
+    tick = head.get("tick", 0)
+    tick0 = int(tick) if str(tick).lstrip("-").isdigit() else 0
 
     out = []
     if head.get("text"):
-        out.append(str(head["text"]))
-    step = 1 if W >= 3 else 5
+        out.append(" " * name_w + str(head["text"]))
     hdr = [" "] * (ncycles * W + 4)
-    for c in range(0, ncycles, step):
+    for c in range(ncycles):
         s = str(tick0 + c)
         hdr[c * W:c * W + len(s)] = list(s)
     out.append(" " * name_w + "".join(hdr).rstrip())
-    for label, rows in lines:
-        if not rows:
-            out.append(label)
-            continue
+    for i, (label, rows, label_row) in enumerate(blocks):
+        if i and label_row and blocks[i - 1][2]:
+            out.append("")  # breathing room between adjacent signals, like WaveDrom
         for k, r in enumerate(rows):
-            out.append(((label if k == 0 else "").ljust(name_w) + r).rstrip())
+            out.append(((label if k == label_row or len(rows) == 1 else "").ljust(name_w) + r).rstrip())
     edges = doc.get("edge") or []
     if edges:
         out.append("")
@@ -289,7 +330,10 @@ def render(doc, cycle_width=4, ascii_mode=False):
     foot = doc.get("foot") or {}
     if foot.get("text"):
         out.append(str(foot["text"]))
-    return "\n".join(out), name_w + ncycles * W
+    art = "\n".join(out)
+    if ascii_mode:
+        art = art.translate(ASCII)
+    return art, name_w + ncycles * W
 
 
 def editor_url(text):
@@ -301,7 +345,7 @@ def main():
     ap.add_argument("file", nargs="?")
     ap.add_argument("-e", "--expr")
     ap.add_argument("--ascii", action="store_true")
-    ap.add_argument("--width", type=int, default=4)
+    ap.add_argument("--width", type=int, default=6)
     ap.add_argument("--no-url", action="store_true")
     ap.add_argument("--url-only", action="store_true")
     a = ap.parse_args()
@@ -322,8 +366,8 @@ def main():
     if not a.url_only:
         art, width = render(doc, a.width, a.ascii)
         print(art)
-        if width > 110:
-            print("wave2term: warning: %d columns wide; consider fewer cycles or --width 3" % width,
+        if width > 120:
+            print("wave2term: warning: %d columns wide; consider fewer cycles or a smaller --width" % width,
                   file=sys.stderr)
     if not a.no_url:
         compact = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))

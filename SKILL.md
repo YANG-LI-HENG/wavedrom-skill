@@ -37,8 +37,8 @@ The diagram must match what the RTL actually does — a wrong waveform is worse 
 - About 6–20 cycles and 3–10 signals. Use `|` to skip uneventful stretches.
 - Order signals causally: clock, reset, control inputs, state, outputs, data.
 - Use `["group name", sig, sig]` to group signals (e.g. `"master"`, `"slave"`), and `{}` for a blank spacer row.
-- Keep bus labels short (`D0`, `IDLE`, `0x3`); a label is cut to fit its segment width.
-- If the script warns the diagram is too wide, cut cycles or pass `--width 3`.
+- Keep bus labels short (`D0`, `IDLE`, `0x3`). Cycles widen automatically so every label fits, up to 16 characters per cycle; longer labels are truncated with `…`.
+- Each signal takes three rows plus a blank line, so stay within about 8 signals per diagram. If the script warns the diagram is too wide, cut cycles, shorten labels, or pass `--width 4`.
 
 ## WaveJSON cheat sheet
 
