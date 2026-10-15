@@ -20,6 +20,7 @@
 - Python 3
 - Linux / WSL / macOS。在 WSL 中會用 Windows 預設瀏覽器打開 HTML
 - 網路：只有安裝時需要，以及 HTML 檔要從 CDN 載入 WaveDrom。PNG/SVG 在本機離線產生
+- 也能在 Claude Code Desktop 和 claude.ai 使用，波形會直接顯示在對話裡（見下方）
 
 ## 安裝
 
@@ -63,6 +64,16 @@ python3 ~/.claude/skills/wavedrom/scripts/wave2img.py -n demo_handshake -e "{sig
 
 WaveJSON 語法請參考 [WaveDrom tutorial](https://wavedrom.com/tutorial.html)。
 
+## 在 Claude Code Desktop / claude.ai 使用
+
+在這兩個環境中，Claude 會把波形畫成 **artifact，直接顯示在對話裡**，不存 PNG，也不開瀏覽器。版面樣式在 `templates/artifact.html`。
+
+- **Claude Code Desktop**：安裝方式和上面相同（clone 到 `~/.claude/skills/wavedrom`）。Claude 會依環境變數 `CLAUDE_CODE_ENTRYPOINT` 自動判斷目前在 Desktop，用 Artifact 工具顯示波形。
+- **claude.ai**：claude.ai 讀不到本機的檔案，所以要上傳一次 skill：
+  1. 把這個資料夾打包成 zip：`cd ~/.claude/skills && zip -r wavedrom.zip wavedrom -x 'wavedrom/.git/*'`
+  2. 到 claude.ai 的 **Settings → Capabilities → Skills** 上傳 `wavedrom.zip`（需要先開啟 code execution）
+  3. 之後在 claude.ai 問時序問題，Claude 就會直接產生波形 artifact
+
 ## 設定
 
 `~/.config/wavedrom-skill/config.json`（檔案不存在時使用下面的預設值；命令列參數優先）：
@@ -88,3 +99,4 @@ WaveJSON 語法請參考 [WaveDrom tutorial](https://wavedrom.com/tutorial.html)
 | `scripts/wave2img.py` | WaveJSON → PNG/SVG + HTML + JSON |
 | `scripts/setup.sh` | 安裝 Python WaveDrom + cairosvg |
 | `scripts/wave2term.py` | 同樣的 WaveJSON 轉成 terminal 文字波形（備用） |
+| `templates/artifact.html` | Desktop / claude.ai 直接顯示用的 artifact 樣板 |

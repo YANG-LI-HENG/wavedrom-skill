@@ -16,6 +16,8 @@ Options:
   -f, --format FMT    image format: png (white background), svg, both, none
   --scale N           PNG scale factor (default 2)
   --overwrite         replace existing files with the same name (default: add _2, _3, ...)
+  --artifact PATH     instead of the files above, write one artifact page (templates/artifact.html
+                      filled in) to PATH, for Claude Code Desktop / claude.ai to show inline
   --no-open           don't open the browser
 
 Defaults come from ~/.config/wavedrom-skill/config.json, e.g.
@@ -168,6 +170,27 @@ def render_images(strict_json, base, fmt, scale):
     return None
 
 
+def write_artifact(doc, path, desc, name):
+    """Fill templates/artifact.html: no ~/waveforms files, no browser."""
+    tpl = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "templates", "artifact.html")
+    with open(tpl, encoding="utf-8") as f:
+        page = f.read()
+    head = doc.get("head") or {}
+    compact = json.dumps(doc, ensure_ascii=False, separators=(",", ":"))
+    fill = {
+        "__TITLE__": html.escape(str(head.get("text") or name or "Waveform")),
+        "__WAVEJSON__": json.dumps(doc, ensure_ascii=False, indent=1).replace("</", "<\\/"),
+        "__CAPTION__": html.escape(desc),
+        "__EDITOR_URL__": html.escape(EDITOR + urllib.parse.quote(compact, safe="")),
+    }
+    for key, value in fill.items():
+        page = page.replace(key, value)
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(page)
+    print("Artifact page: " + os.path.abspath(path))
+
+
 def open_in_browser(path):
     if shutil.which("wslpath") and shutil.which("explorer.exe"):
         win = subprocess.run(["wslpath", "-w", path], capture_output=True, text=True).stdout.strip()
@@ -188,6 +211,7 @@ def main():
     ap.add_argument("-f", "--format", choices=FORMATS)
     ap.add_argument("--scale", type=float)
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--artifact", metavar="PATH")
     ap.add_argument("--no-open", action="store_true")
     a = ap.parse_args()
     cfg = load_config()
@@ -211,6 +235,9 @@ def main():
         sys.exit("wave2img: cannot parse WaveJSON: %s" % e)
 
     head = doc.get("head") or {}
+    if a.artifact:
+        write_artifact(doc, a.artifact, a.desc, a.name)
+        return
     now = datetime.datetime.now()
     name = slug(a.name or "") or slug(str(head.get("text", ""))) or now.strftime("wave_%Y%m%d_%H%M%S")
     os.makedirs(out_dir, exist_ok=True)

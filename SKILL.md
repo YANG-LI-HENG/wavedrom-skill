@@ -7,6 +7,16 @@ description: Draw timing diagrams with WaveDrom (HTML page opened in the browser
 
 The user writes RTL with Claude Code and finds prose descriptions of timing hard to follow. When timing matters, **draw a waveform first, then explain it**.
 
+## Where you are decides the output
+
+| Environment | How to tell | Output |
+|---|---|---|
+| Claude Code CLI / VS Code | `echo $CLAUDE_CODE_ENTRYPOINT` gives `cli`, `claude-vscode`, or anything without `desktop` | Local files: the **Workflow** below (PNG in `~/waveforms` + HTML opened in the browser) |
+| Claude Code Desktop | `$CLAUDE_CODE_ENTRYPOINT` contains `desktop`, or your system prompt says you run in the Claude desktop app | **Show inline as an artifact**, see **Desktop and claude.ai** below. Don't write to `~/waveforms` and don't open a browser |
+| claude.ai (web / app chat) | No local shell or `~/.claude`; the skill was uploaded to claude.ai | **Show inline as an artifact**, see **Desktop and claude.ai** below |
+
+Check `$CLAUDE_CODE_ENTRYPOINT` once per session, the first time you draw.
+
 ## Workflow
 
 1. Decide what the diagram must prove (e.g. "data is captured the cycle after valid&&ready", "FSM takes 3 cycles from START to DONE"). Pick only the signals that show it.
@@ -29,6 +39,19 @@ The user writes RTL with Claude Code and finds prose descriptions of timing hard
 3. **Check the PNG before replying**: Read the image file and confirm it shows what you meant (transitions and labels in the right cycles). Fix the JSON and re-run if not. The WaveDrom tick numbers mark clock edges: "cycle N" is the column between ticks N and N+1.
 4. **Do not paste a text-art waveform into the reply** (the user found it hard to read). Give the image path (and HTML path), then explain by cycle number ("in cycle 3 valid and ready are both high, so …").
 5. If the script reports `Image: skipped`, the HTML still works. Mention that images need `~/.claude/skills/wavedrom/scripts/setup.sh`.
+
+## Desktop and claude.ai
+
+Show each diagram inline as an HTML artifact built from `templates/artifact.html` (WaveDrom from cdnjs, the diagram on a white card, the `-d` caption as cycle notes below it). No PNG, no `~/waveforms`, no browser.
+
+- **Claude Code Desktop**: fill the template with the script, writing into your scratchpad directory, then publish that file with the Artifact tool (`icon: "waveform"`; one artifact per diagram; to revise a diagram, republish the same file path):
+  ```bash
+  python3 ~/.claude/skills/wavedrom/scripts/wave2img.py --artifact <scratchpad>/<short_name>.html -n <short_name> -d "<caption>" -e "{signal:[ ... ], head:{text:'<title>', tick:0}}"
+  ```
+  The same naming rules apply to `<short_name>`. If the Artifact tool isn't available in this session, fall back to the local-files Workflow and say so.
+- **claude.ai**: read `templates/artifact.html` from this skill, replace `__TITLE__`, `__CAPTION__` (HTML-escaped), `__WAVEJSON__` (strict JSON; write `<\/` for any `</`) and `__EDITOR_URL__` (`https://wavedrom.com/editor.html?` + the URL-encoded compact JSON), and present the result as an HTML artifact.
+- You can't look at the rendered artifact, so double-check every wave string by counting characters per cycle against your intended timing before publishing.
+- In the reply, explain by cycle number as usual; don't paste the WaveJSON or text art.
 
 When comparing alternatives (e.g. registered vs. combinational ready, or current behaviour vs. the fix), draw one diagram per alternative (`<name>_before`, `<name>_after`), or put both in one diagram using groups.
 
