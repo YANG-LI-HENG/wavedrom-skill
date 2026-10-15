@@ -1,6 +1,6 @@
 ---
 name: wavedrom
-description: Draw timing diagrams with WaveDrom (HTML + SVG files opened in the browser) to explain digital-logic timing. Use PROACTIVELY whenever explaining or designing cycle-level behavior in Verilog/SystemVerilog/VHDL/RTL — valid/ready or req/ack handshakes, FSM state sequences, pipeline latency, counters, FIFOs, bursts, reset sequences, CDC, testbench stimulus or a simulation mismatch — instead of describing the timing only in prose. Also use when the user asks for a waveform, timing diagram, or /wavedrom.
+description: Draw timing diagrams with WaveDrom (HTML page opened in the browser + white-background PNG/SVG image) to explain digital-logic timing. Use PROACTIVELY whenever explaining or designing cycle-level behavior in Verilog/SystemVerilog/VHDL/RTL — valid/ready or req/ack handshakes, FSM state sequences, pipeline latency, counters, FIFOs, bursts, reset sequences, CDC, testbench stimulus or a simulation mismatch — instead of describing the timing only in prose. Also use when the user asks for a waveform, timing diagram, or /wavedrom.
 ---
 
 # WaveDrom timing diagrams
@@ -14,14 +14,16 @@ The user writes RTL with Claude Code and finds prose descriptions of timing hard
    ```bash
    python3 ~/.claude/skills/wavedrom/scripts/wave2img.py -n <short_name> -d "<caption>" -e "{signal:[ ... ], head:{text:'<title>', tick:0}}"
    ```
-   - This writes `~/waveforms/<short_name>.html`, `.svg` and `.json`, and opens the HTML in the user's browser. The HTML uses the official WaveDrom renderer; the SVG is for docs and offline viewing.
+   - This writes `~/waveforms/<short_name>.html`, `.json` and an image, and opens the HTML in the user's browser. The HTML uses the official WaveDrom renderer.
+   - The image format comes from `~/.config/wavedrom-skill/config.json` (`"format": "png"` by default: white background; also `svg`, `both`, `none`). Pass `-f svg` etc. only when the user asks for a different format for this diagram; if they want to change it permanently, edit the config file.
    - `-n`: a short snake_case name describing the diagram (`axi_handshake`, `fifo_full_fix`). Reusing a name overwrites the old files, so use a new one per diagram unless you're revising the same one.
    - `-d`: a short per-cycle summary shown under the diagram on the page (newlines allowed).
    - Always set `head:{tick:0}` so the diagram has cycle numbers to refer to.
    - For a large diagram, write the JSON to a file in the scratchpad and pass the path instead of `-e`.
    - Several diagrams in one reply: run the script once per diagram (each opens its own tab). Use `--no-open` for any the user doesn't need to see right away.
-3. **Do not paste a text-art waveform into the reply** (the user found it hard to read). Give the HTML path, and the SVG path when it matters, then explain by cycle number ("in cycle 3 valid and ready are both high, so …").
-4. If the script reports `SVG: skipped`, the HTML still works. Mention that SVG needs `~/.claude/skills/wavedrom/scripts/setup.sh`.
+3. **Check the PNG before replying**: Read the image file and confirm it shows what you meant (labels in the right cycles, edges where intended). Fix the JSON and re-run if not. The WaveDrom tick numbers mark clock edges: "cycle N" is the column between ticks N and N+1.
+4. **Do not paste a text-art waveform into the reply** (the user found it hard to read). Give the image path (and HTML path), then explain by cycle number ("in cycle 3 valid and ready are both high, so …").
+5. If the script reports `Image: skipped`, the HTML still works. Mention that images need `~/.claude/skills/wavedrom/scripts/setup.sh`.
 
 When comparing alternatives (e.g. registered vs. combinational ready, or current behaviour vs. the fix), draw one diagram per alternative (`<name>_before`, `<name>_after`), or put both in one diagram using groups.
 

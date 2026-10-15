@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install the Python WaveDrom port (used by wave2img.py for SVG output) into its own venv.
+# Install the Python WaveDrom port + cairosvg (used by wave2img.py for SVG/PNG output) into its own venv.
 # Works without sudo, even when python3-venv/ensurepip is missing.
 set -e
 VENV="$HOME/.local/share/wavedrom-venv"
@@ -10,5 +10,5 @@ if ! "$VENV/bin/python" -m pip --version >/dev/null 2>&1; then
     "$VENV/bin/python" -I "$tmp/get-pip.py" -q
     rm -rf "$tmp"
 fi
-"$VENV/bin/python" -m pip install -q wavedrom
-"$VENV/bin/python" -c "import wavedrom; print('wavedrom installed in $VENV')"
+"$VENV/bin/python" -m pip install -q wavedrom cairosvg
+"$VENV/bin/python" -c "import wavedrom, cairosvg; print('wavedrom installed in $VENV')"

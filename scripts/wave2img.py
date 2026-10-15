@@ -6,20 +6,25 @@ Usage:
   wave2img.py -n NAME FILE.json             # from file
   cat x.json | wave2img.py -n NAME          # stdin
 
-Writes NAME.json, NAME.html and NAME.svg into the output directory
-(default ~/waveforms) and opens the HTML in the Windows default browser.
+Writes NAME.json, NAME.html and the image (NAME.png by default) into the
+output directory (default ~/waveforms) and opens the HTML in the browser.
 
 Options:
-  -n, --name NAME   file name (default: from head.text, else a timestamp)
-  -o, --out DIR     output directory (default ~/waveforms)
-  -d, --desc TEXT   a caption shown under the diagram on the HTML page
-  --no-open         don't open the browser
-  --no-svg          skip the SVG file
+  -n, --name NAME     file name (default: from head.text, else a timestamp)
+  -o, --out DIR       output directory
+  -d, --desc TEXT     a caption shown under the diagram on the HTML page
+  -f, --format FMT    image format: png (white background), svg, both, none
+  --scale N           PNG scale factor (default 2)
+  --no-open           don't open the browser
+
+Defaults come from ~/.config/wavedrom-skill/config.json, e.g.
+  {"format": "png", "out": "~/waveforms", "scale": 2, "open": true}
+and command-line options override them.
 
 The HTML loads WaveDrom from cdnjs, so the diagram looks exactly like
-wavedrom.com; it falls back to the embedded SVG when offline. The SVG
-comes from the Python port of WaveDrom (see setup.sh), which may differ
-from the official renderer in small details.
+wavedrom.com; offline it shows the local image instead. The image comes
+from the Python port of WaveDrom (see setup.sh), which may differ from
+the official renderer in small details.
 """
 import argparse
 import datetime
@@ -36,6 +41,9 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from wave2term import load  # relaxed WaveJSON parser  # noqa: E402
 
 VENV_PY = os.path.expanduser("~/.local/share/wavedrom-venv/bin/python")
+CONFIG = os.path.expanduser("~/.config/wavedrom-skill/config.json")
+DEFAULTS = {"format": "png", "out": "~/waveforms", "scale": 2, "open": True}
+FORMATS = ("png", "svg", "both", "none")
 WAVEDROM_CDN = "https://cdnjs.cloudflare.com/ajax/libs/wavedrom/3.5.0/"
 EDITOR = "https://wavedrom.com/editor.html?"
 
@@ -84,7 +92,7 @@ PAGE = """<!doctype html>
   }});
   function svgText() {{
     const svg = document.querySelector('#live svg');
-    if (!svg) {{ alert('Offline: use the ' + NAME + '.svg file next to this page.'); throw 0; }}
+    if (!svg) {{ alert('Offline: use the image file next to this page.'); throw 0; }}
     const clone = svg.cloneNode(true);
     clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
     return [new XMLSerializer().serializeToString(clone), svg.getBoundingClientRect()];
@@ -122,13 +130,37 @@ def slug(text):
     return s[:60] or None
 
 
-def render_svg(strict_json, path):
-    """SVG via the Python WaveDrom port in its venv; returns an error string or None."""
+RENDER = """
+import sys, wavedrom
+base, fmt, scale = sys.argv[1], sys.argv[2], float(sys.argv[3])
+svg = wavedrom.render(sys.stdin.read()).tostring()
+if fmt in ("svg", "both"):
+    open(base + ".svg", "w", encoding="utf-8").write(svg)
+if fmt in ("png", "both"):
+    import cairosvg
+    cairosvg.svg2png(bytestring=svg.encode("utf-8"), write_to=base + ".png",
+                     background_color="white", scale=scale)
+"""
+
+
+def load_config():
+    cfg = dict(DEFAULTS)
+    try:
+        with open(CONFIG, encoding="utf-8") as f:
+            cfg.update(json.load(f))
+    except FileNotFoundError:
+        pass
+    except (OSError, ValueError) as e:
+        print("wave2img: ignoring %s: %s" % (CONFIG, e), file=sys.stderr)
+    return cfg
+
+
+def render_images(strict_json, base, fmt, scale):
+    """Images via the Python WaveDrom port in its venv; returns an error string or None."""
     if not os.path.exists(VENV_PY):
         return "Python WaveDrom not installed (run %s)" % os.path.join(os.path.dirname(__file__), "setup.sh")
-    code = "import sys, wavedrom; wavedrom.render(sys.stdin.read()).saveas(sys.argv[1])"
-    r = subprocess.run([VENV_PY, "-I", "-c", code, path], input=strict_json, text=True,
-                       capture_output=True, timeout=60)
+    r = subprocess.run([VENV_PY, "-I", "-c", RENDER, base, fmt, str(scale)], input=strict_json,
+                       text=True, capture_output=True, timeout=60)
     if r.returncode != 0:
         lines = (r.stderr or r.stdout).strip().splitlines()
         return lines[-1] if lines else "exit %d" % r.returncode
@@ -150,11 +182,19 @@ def main():
     ap.add_argument("file", nargs="?")
     ap.add_argument("-e", "--expr")
     ap.add_argument("-n", "--name")
-    ap.add_argument("-o", "--out", default=os.path.expanduser("~/waveforms"))
+    ap.add_argument("-o", "--out")
     ap.add_argument("-d", "--desc", default="")
+    ap.add_argument("-f", "--format", choices=FORMATS)
+    ap.add_argument("--scale", type=float)
     ap.add_argument("--no-open", action="store_true")
-    ap.add_argument("--no-svg", action="store_true")
     a = ap.parse_args()
+    cfg = load_config()
+    fmt = a.format or cfg["format"]
+    if fmt not in FORMATS:
+        sys.exit("wave2img: format must be one of %s (got %r in %s)" % (", ".join(FORMATS), fmt, CONFIG))
+    out_dir = os.path.expanduser(a.out or cfg["out"])
+    scale = a.scale or float(cfg["scale"])
+    should_open = cfg["open"] and not a.no_open
 
     if a.expr is not None:
         text = a.expr
@@ -171,27 +211,31 @@ def main():
     head = doc.get("head") or {}
     now = datetime.datetime.now()
     name = slug(a.name or "") or slug(str(head.get("text", ""))) or now.strftime("wave_%Y%m%d_%H%M%S")
-    os.makedirs(a.out, exist_ok=True)
-    base = os.path.join(os.path.abspath(a.out), name)
+    os.makedirs(out_dir, exist_ok=True)
+    base = os.path.join(os.path.abspath(out_dir), name)
 
     strict = json.dumps(doc, ensure_ascii=False, indent=1)
     with open(base + ".json", "w", encoding="utf-8") as f:
         f.write(strict + "\n")
 
-    has_svg, svg_err = False, None
-    if not a.no_svg:
-        svg_err = render_svg(strict, base + ".svg")
-        has_svg = svg_err is None
+    images, img_err = [], None
+    if fmt != "none":
+        for ext in ("png", "svg"):  # drop stale images from an earlier run with another format
+            if os.path.exists(base + "." + ext):
+                os.remove(base + "." + ext)
+        img_err = render_images(strict, base, fmt, scale)
+        if img_err is None:
+            images = [ext for ext in ("png", "svg") if os.path.exists(base + "." + ext)]
 
-    files = [name + ".json", name + ".html"] + ([name + ".svg"] if has_svg else [])
+    files = [name + ".json", name + ".html"] + [name + "." + ext for ext in images]
     page = PAGE.format(
         title=html.escape(str(head.get("text") or name)),
         cdn=WAVEDROM_CDN,
         stamp=now.strftime("%Y-%m-%d %H:%M"),
         files=html.escape(" · ".join(files)),
         wavejson=strict.replace("</", "<\\/"),
-        fallback=('<img src="%s.svg" alt="waveform">' % html.escape(name)) if has_svg
-        else "<p>Offline and no SVG available: open the WaveDrom editor link when online.</p>",
+        fallback=('<img src="%s.%s" alt="waveform">' % (html.escape(name), images[0])) if images
+        else "<p>Offline and no image available: open the WaveDrom editor link when online.</p>",
         desc=html.escape(a.desc),
         editor=html.escape(EDITOR + urllib.parse.quote(json.dumps(doc, ensure_ascii=False,
                                                                   separators=(",", ":")), safe="")),
@@ -201,12 +245,12 @@ def main():
         f.write(page)
 
     print("HTML: " + base + ".html")
-    if has_svg:
-        print("SVG:  " + base + ".svg")
-    elif svg_err:
-        print("SVG:  skipped (%s)" % svg_err, file=sys.stderr)
+    for ext in images:
+        print("%-5s %s.%s" % (ext.upper() + ":", base, ext))
+    if img_err:
+        print("Image: skipped (%s)" % img_err, file=sys.stderr)
     print("JSON: " + base + ".json")
-    if not a.no_open:
+    if should_open:
         open_in_browser(base + ".html")
 
 
