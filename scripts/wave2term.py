@@ -38,8 +38,9 @@ CLOCK = set("pnPN")
 LEVEL_MAP = {"h": "1", "H": "1", "u": "1", "l": "0", "L": "0", "d": "0"}
 MAX_AUTO_WIDTH = 16  # don't widen cycles beyond this for long labels; truncate instead
 
-# WaveDrom's default skin: '=' and '2' are white, 3-9 are pastel fills (256-color backgrounds here)
-BUS_BG = {"3": 229, "4": 223, "5": 153, "6": 159, "7": 194, "8": 219, "9": 217}
+# WaveDrom's colour order ('=' and '2' uncoloured; 3 yellow, 4 orange, 5 blue, 6 cyan, 7 green,
+# 8 pink, 9 red), as saturated 256-colour foregrounds for the box outline and label
+BUS_FG = {"3": 220, "4": 208, "5": 39, "6": 51, "7": 77, "8": 213, "9": 203}
 STYLE_HATCH = "38;5;244"  # x: grey hatching
 STYLE_Z = "38;5;33"       # z: blue, as in WaveDrom
 STYLE_EDGE = "38;5;196"   # P/N edge arrows
@@ -215,12 +216,14 @@ def draw(prims, total, hatch):
             if cur[4] and a in (HI, LO) and k in (HI, LO):
                 put(1, b, cur[4], STYLE_EDGE)  # P / N: arrow on the active edge
 
-    # coloured bus fills, between the crossings on the label row
+    # coloured bus values: outline and label in the value's colour
     for kind, s, e, _, _, state in prims:
-        if kind == BOX and state in BUS_BG:
-            for c in range(s + 1 if s else 0, min(e, total)):
-                if rows[1][c] != "╳":
-                    styles[1][c] = "48;5;%d;38;5;16" % BUS_BG[state]
+        if kind == BOX and state in BUS_FG:
+            st = "38;5;%d" % BUS_FG[state]
+            for c in range(s, min(e, total)):
+                for r in range(3):
+                    if rows[r][c] != " ":
+                        styles[r][c] = st
     return rows, styles
 
 
