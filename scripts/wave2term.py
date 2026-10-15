@@ -10,6 +10,9 @@ Options:
   --ascii        plain ASCII instead of Unicode box drawing
   --width N      minimum characters per cycle (default 6, multiplied by config.hscale);
                  cycles are widened automatically so every bus label fits
+  --color WHEN   auto (default: only when stdout is a terminal), always, never
+  --last         re-render the most recently rendered diagram (saved in ~/.cache/wavedrom/last.json),
+                 e.g. to view it in colour:  ! python3 wave2term.py --last
   --no-url       don't print the WaveDrom editor link
   --url-only     only print the editor link
 
@@ -23,15 +26,24 @@ x as a hatched box, z on the middle row.
 import argparse
 import json
 import math
+import os
 import re
 import sys
 import urllib.parse
 
 EDITOR = "https://wavedrom.com/editor.html?"
+LAST = os.path.join(os.path.expanduser("~"), ".cache", "wavedrom", "last.json")
 BUS = set("=23456789")
 CLOCK = set("pnPN")
 LEVEL_MAP = {"h": "1", "H": "1", "u": "1", "l": "0", "L": "0", "d": "0"}
 MAX_AUTO_WIDTH = 16  # don't widen cycles beyond this for long labels; truncate instead
+
+# WaveDrom's default skin: '=' and '2' are white, 3-9 are pastel fills (256-color backgrounds here)
+BUS_BG = {"3": 229, "4": 223, "5": 153, "6": 159, "7": 194, "8": 219, "9": 217}
+STYLE_HATCH = "38;5;244"  # x: grey hatching
+STYLE_Z = "38;5;33"       # z: blue, as in WaveDrom
+STYLE_EDGE = "38;5;196"   # P/N edge arrows
+STYLE_NAME = "1"          # signal names in bold
 
 
 # ---------------------------------------------------------------- parsing
@@ -112,14 +124,14 @@ def primitives(segs, L, labels):
             mark = {"P": "↑", "N": "↓"}.get(state)
             for k in range(n):
                 s = pos + k * L
-                prims.append([first, s, s + h, None, mark])
-                prims.append([second, s + h, s + L, None, None])
+                prims.append([first, s, s + h, None, mark, state])
+                prims.append([second, s + h, s + L, None, None, state])
         elif state in BUS:
-            prims.append([BOX, pos, pos + n * L, str(labels.pop(0)) if labels else "", None])
+            prims.append([BOX, pos, pos + n * L, str(labels.pop(0)) if labels else "", None, state])
         elif state in KIND:
-            prims.append([KIND[state], pos, pos + n * L, None, None])
+            prims.append([KIND[state], pos, pos + n * L, None, None, state])
         else:  # x and anything unknown
-            prims.append([BOX, pos, pos + n * L, None, None])
+            prims.append([BOX, pos, pos + n * L, None, None, "x"])
         pos += n * L
     # merge adjacent identical levels (e.g. '1' after a clock that ended high)
     merged = []
@@ -132,21 +144,25 @@ def primitives(segs, L, labels):
 
 
 def draw(prims, total, hatch):
+    """Return (rows, styles): three rows of characters and a parallel grid of ANSI SGR codes."""
     rows = [[" "] * total for _ in range(3)]
+    styles = [[None] * total for _ in range(3)]
 
-    def put(r, c, ch):
+    def put(r, c, ch, style=None):
         if 0 <= c < total:
             rows[r][c] = ch
+            if style:
+                styles[r][c] = style
 
     # bodies
-    for kind, s, e, label, _ in prims:
+    for kind, s, e, label, _, state in prims:
         for c in range(s, e):
             if kind == HI:
                 put(0, c, "─")
             elif kind == LO:
                 put(2, c, "─")
             elif kind == MID:
-                put(1, c, "─")
+                put(1, c, "─", STYLE_Z)
             elif kind == BOX:
                 put(0, c, "─")
                 put(2, c, "─")
@@ -154,7 +170,7 @@ def draw(prims, total, hatch):
             inner_s, inner_e = s + (2 if s else 1), e - 1
             if label is None:
                 for c in range(inner_s, inner_e):
-                    put(1, c, hatch)
+                    put(1, c, hatch, STYLE_HATCH)
             elif label:
                 room = max(0, inner_e - inner_s)
                 text = label if len(label) <= room else label[:max(0, room - 1)] + "…"
@@ -197,8 +213,25 @@ def draw(prims, total, hatch):
                 if ch:
                     put(r, b, ch)
             if cur[4] and a in (HI, LO) and k in (HI, LO):
-                put(1, b, cur[4])  # P / N: arrow on the active edge
-    return rows
+                put(1, b, cur[4], STYLE_EDGE)  # P / N: arrow on the active edge
+
+    # coloured bus fills, between the crossings on the label row
+    for kind, s, e, _, _, state in prims:
+        if kind == BOX and state in BUS_BG:
+            for c in range(s + 1 if s else 0, min(e, total)):
+                if rows[1][c] != "╳":
+                    styles[1][c] = "48;5;%d;38;5;16" % BUS_BG[state]
+    return rows, styles
+
+
+def cells(chars, styles, table):
+    """Turn characters (+ optional SGR codes) into printable cells, one per column."""
+    out = []
+    for ch, st in zip(chars, styles):
+        if table:
+            ch = ch.translate(table)
+        out.append("\033[%sm%s\033[0m" % (st, ch) if st else ch)
+    return out
 
 
 def overlay_gaps(rows, segs, L, gap):
@@ -268,7 +301,7 @@ def cycle_width(entries, base):
     return W
 
 
-def render(doc, base_width=6, ascii_mode=False):
+def render(doc, base_width=6, ascii_mode=False, color=False):
     hscale = int((doc.get("config") or {}).get("hscale", 1) or 1)
     entries = list(flatten(doc.get("signal", [])))
     W = min(max(base_width * hscale, cycle_width(entries, base_width * hscale)),
@@ -283,26 +316,29 @@ def render(doc, base_width=6, ascii_mode=False):
     for depth, it in entries:
         indent = "  " * depth
         if it is None:
-            blocks.append(("", [""], 0))
+            blocks.append(("", [[]], 0))
             continue
         if isinstance(it, str):
-            blocks.append((indent + group_mark + it, [""], 0))
+            blocks.append((indent + group_mark + it, [[]], 0))
             continue
         period, wave, segs, data = signal_info(it)
         L = W * period
         cycles = sum(n for _, n, _ in segs)
         total = cycles * L
         ncycles = max(ncycles, cycles * period)
-        rows = draw(primitives(segs, L, data), total, hatch)
+        rows, styles = draw(primitives(segs, L, data), total, hatch)
         overlay_gaps(rows, segs, L, gap)
-        rows = ["".join(r) for r in rows]
+        if not color:
+            styles = [[None] * total for _ in rows]
+        table = ASCII if ascii_mode else None
+        rows = [cells(r, st, table) for r, st in zip(rows, styles)]
         if it.get("node"):
-            rows.append(node_row(str(it["node"]), L, total))
+            rows.append(list(node_row(str(it["node"]), L, total)))
         shift = int(round(float(it.get("phase", 0)) * W))
         if shift > 0:
             rows = [r[shift:] for r in rows]
         elif shift < 0:
-            rows = [" " * -shift + r for r in rows]
+            rows = [[" "] * -shift + r for r in rows]
         blocks.append((indent + str(it.get("name", "")), rows, 1))
 
     name_w = max([len(l) for l, _, _ in blocks] + [0]) + 2
@@ -322,7 +358,12 @@ def render(doc, base_width=6, ascii_mode=False):
         if i and label_row and blocks[i - 1][2]:
             out.append("")  # breathing room between adjacent signals, like WaveDrom
         for k, r in enumerate(rows):
-            out.append(((label if k == label_row or len(rows) == 1 else "").ljust(name_w) + r).rstrip())
+            while r and r[-1] == " ":
+                r = r[:-1]
+            name = (label if k == label_row or len(rows) == 1 else "").ljust(name_w)
+            if color and name.strip():
+                name = name.replace(label, "\033[%sm%s\033[0m" % (STYLE_NAME, label), 1)
+            out.append((name + "".join(r)).rstrip())
     edges = doc.get("edge") or []
     if edges:
         out.append("")
@@ -331,8 +372,15 @@ def render(doc, base_width=6, ascii_mode=False):
     if foot.get("text"):
         out.append(str(foot["text"]))
     art = "\n".join(out)
+    if color:  # merge adjacent cells that share a style
+        merge = re.compile(r"\x1b\[([\d;]+)m([^\x1b]*)\x1b\[0m\x1b\[\1m")
+        while True:
+            merged = merge.sub(lambda m: "\x1b[%sm%s" % (m.group(1), m.group(2)), art)
+            if merged == art:
+                break
+            art = merged
     if ascii_mode:
-        art = art.translate(ASCII)
+        art = art.translate(ASCII)  # group marks, title etc.; waves were translated per cell
     return art, name_w + ncycles * W
 
 
@@ -346,11 +394,18 @@ def main():
     ap.add_argument("-e", "--expr")
     ap.add_argument("--ascii", action="store_true")
     ap.add_argument("--width", type=int, default=6)
+    ap.add_argument("--color", choices=["auto", "always", "never"], default="auto")
+    ap.add_argument("--last", action="store_true")
     ap.add_argument("--no-url", action="store_true")
     ap.add_argument("--url-only", action="store_true")
     a = ap.parse_args()
 
-    if a.expr is not None:
+    if a.last:
+        if not os.path.exists(LAST):
+            sys.exit("wave2term: no diagram rendered yet (%s missing)" % LAST)
+        with open(LAST, encoding="utf-8") as f:
+            text = f.read()
+    elif a.expr is not None:
         text = a.expr
     elif a.file and a.file != "-":
         with open(a.file, encoding="utf-8") as f:
@@ -362,9 +417,18 @@ def main():
         doc = load(text)
     except (json.JSONDecodeError, ValueError) as e:
         sys.exit("wave2term: cannot parse WaveJSON: %s" % e)
+    if not a.last:
+        try:
+            os.makedirs(os.path.dirname(LAST), exist_ok=True)
+            with open(LAST, "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False, indent=1)
+        except OSError:
+            pass
 
     if not a.url_only:
-        art, width = render(doc, a.width, a.ascii)
+        color = a.color == "always" or (a.color == "auto" and sys.stdout.isatty()
+                                         and not os.environ.get("NO_COLOR"))
+        art, width = render(doc, a.width, a.ascii, color)
         print(art)
         if width > 120:
             print("wave2term: warning: %d columns wide; consider fewer cycles or a smaller --width" % width,

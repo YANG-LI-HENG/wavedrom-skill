@@ -16,7 +16,7 @@ The user writes RTL with Claude Code and finds prose descriptions of timing hard
    ```
    For larger diagrams write the JSON to a file in the scratchpad directory and pass the path. Add `--ascii` if the user reports broken box characters.
 3. **Paste the script output verbatim into your reply inside a ```text code block.** Bash output is not reliably shown to the user, so the diagram only reaches them if you put it in your message. Do not hand-edit the rendered art.
-4. Below the block, include the `WaveDrom editor:` link the script printed, so the user can open the full graphical version (and edit it).
+4. Below the block, include the `WaveDrom editor:` link the script printed, so the user can open the full graphical version (and edit it). Text in your reply can't carry terminal colours, so also add one line telling the user they can view the coloured version with `! python3 ~/.claude/skills/wavedrom/scripts/wave2term.py --last`. Every render overwrites the saved diagram, so when a reply has several diagrams, `--last` shows only the final one.
 5. Then explain, referring to cycle numbers from the header row ("in cycle 3 valid and ready are both high, so …").
 
 When comparing alternatives (e.g. registered vs. combinational ready, or current behaviour vs. the fix), draw one diagram per alternative, or put both in one diagram using groups.
@@ -37,6 +37,7 @@ The diagram must match what the RTL actually does — a wrong waveform is worse 
 - About 6–20 cycles and 3–10 signals. Use `|` to skip uneventful stretches.
 - Order signals causally: clock, reset, control inputs, state, outputs, data.
 - Use `["group name", sig, sig]` to group signals (e.g. `"master"`, `"slave"`), and `{}` for a blank spacer row.
+- Use bus colours to carry meaning: `3`–`9` fill the box (3 yellow, 4 orange, 5 blue, 6 cyan, 7 green, 8 pink, 9 red, as in WaveDrom); `=` and `2` are uncoloured. E.g. one colour per FSM state, or the same colour for a value as it moves through pipeline stages.
 - Keep bus labels short (`D0`, `IDLE`, `0x3`). Cycles widen automatically so every label fits, up to 16 characters per cycle; longer labels are truncated with `…`.
 - Each signal takes three rows plus a blank line, so stay within about 8 signals per diagram. If the script warns the diagram is too wide, cut cycles, shorten labels, or pass `--width 4`.
 
