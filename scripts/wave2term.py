@@ -11,8 +11,8 @@ Options:
   --width N      minimum characters per cycle (default 6, multiplied by config.hscale);
                  cycles are widened automatically so every bus label fits
   --color WHEN   auto (default: only when stdout is a terminal), always, never
-  --last         re-render the most recently rendered diagram (saved in ~/.cache/wavedrom/last.json),
-                 e.g. to view it in colour:  ! python3 wave2term.py --last
+  --last         re-render the most recently rendered diagram (saved in ~/.cache/wavedrom/last.json)
+                 in colour, e.g. from Claude Code:  ! python3 wave2term.py --last
   --no-url       don't print the WaveDrom editor link
   --url-only     only print the editor link
 
@@ -426,7 +426,8 @@ def main():
             pass
 
     if not a.url_only:
-        color = a.color == "always" or (a.color == "auto" and sys.stdout.isatty()
+        # --last exists to view colour (e.g. via Claude Code's `!`, which isn't a tty), so it forces colour
+        color = a.color == "always" or (a.color == "auto" and (a.last or sys.stdout.isatty())
                                          and not os.environ.get("NO_COLOR"))
         art, width = render(doc, a.width, a.ascii, color)
         print(art)
